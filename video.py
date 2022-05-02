@@ -1,4 +1,6 @@
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from threading import Thread
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input as preprocess_input_mob
+from tensorflow.keras.applications.inception_v3 import preprocess_input as preprocess_input_inc
 from tensorflow.keras.preprocessing.image import img_to_array
 from tensorflow.keras.models import load_model
 from imutils.video import VideoStream
@@ -8,12 +10,37 @@ import time
 import cv2
 import os
 
-def detect_and_predict_mask(frame, faceNet, maskNet):
+class ThreadedCamera(object):
+    def __init__(self, source = 0):
+
+        self.capture = cv2.VideoCapture(source)
+
+        self.thread = Thread(target = self.update, args = ())
+        self.thread.daemon = True
+        self.thread.start()
+
+        self.status = False
+        self.frame  = None
+
+    def update(self):
+        while True:
+            if self.capture.isOpened():
+                (self.status, self.frame) = self.capture.read()
+
+    def grab_frame(self):
+        if self.status:
+            return self.frame
+        return None  
+
+
+def detect_and_predict_mask(frame, faceNet, model, _pre_process_input):
 	# grab the dimensions of the frame and then construct a blob
 	# from it
 	(h, w) = frame.shape[:2]
-	blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300),
-		(104.0, 177.0, 123.0))
+	blob = cv2.dnn.blobFromImage(frame, 
+															 	1.0, 
+																(300, 300),
+															 	(104.0, 177.0, 123.0))
 
 	# pass the blob through the network and obtain the face detections
 	faceNet.setInput(blob)
@@ -51,7 +78,7 @@ def detect_and_predict_mask(frame, faceNet, maskNet):
 				face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
 				face = cv2.resize(face, (224, 224))
 				face = img_to_array(face)
-				face = preprocess_input(face)
+				face = _pre_process_input(face)
 
 				# add the face and bounding boxes to their respective
 				# lists
@@ -64,7 +91,7 @@ def detect_and_predict_mask(frame, faceNet, maskNet):
 		# faces at the same time rather than one-by-one predictions
 		# in the above `for` loop
 		faces = np.array(faces, dtype="float32")
-		preds = maskNet.predict(faces, batch_size=32)
+		preds = model.predict(faces, batch_size=32)
 
 	# return a 2-tuple of the face locations and their corresponding
 	# locations
@@ -79,22 +106,26 @@ faceNet = cv2.dnn.readNet(prototxtPath, weightsPath)
 # load the face mask detector model from disk
 print("[INFO] loading face mask detector model...")
 maskNet = load_model("model_MobileNetV2")
+maskInception = load_model("model_InceptionV3")
 
 # initialize the video stream and allow the camera sensor to warm up
 print("[INFO] starting video stream...")
-vs = VideoStream(src=0).start()
-time.sleep(2.0)
+threaded_camera = ThreadedCamera(src=0)
+# vs = VideoStream(src=0).start()
+time.sleep(2)
 
 # loop over the frames from the video stream
 while True:
 	# grab the frame from the threaded video stream and resize it
 	# to have a maximum width of 400 pixels
-	frame = vs.read()
+	frame = threaded_camera.grab_frame()
 	frame = imutils.resize(frame, width=400)
+	frame2 = frame.copy()
 
 	# detect faces in the frame and determine if they are wearing a
 	# face mask or not
-	(locs, preds) = detect_and_predict_mask(frame, faceNet, maskNet)
+	(locs, preds) = detect_and_predict_mask(frame, faceNet, maskNet, preprocess_input_mob)
+	(locs2, preds2) = detect_and_predict_mask(frame, faceNet, maskInception, preprocess_input_inc)
 
 	# loop over the detected face locations and their corresponding
 	# locations
@@ -113,12 +144,34 @@ while True:
 
 		# display the label and bounding box rectangle on the output
 		# frame
-		cv2.putText(frame, label, (startX, startY - 10),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
+		cv2.putText(frame, 
+								label, 
+								(startX, startY - 10),
+								cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
 		cv2.rectangle(frame, (startX, startY), (endX, endY), color, 2)
 
+	for (box, pred) in zip(locs2, preds2):
+		# unpack the bounding box and predictions
+		(startX, startY, endX, endY) = box
+		(mask, withoutMask) = pred
+
+		# determine the class label and color we'll use to draw
+		# the bounding box and text
+		label = "Mask" if mask > withoutMask else "No Mask"
+		color = (0, 255, 0) if label == "Mask" else (0, 0, 255)
+			
+		# include the probability in the label
+		label = "{}: {:.2f}%".format(label, max(mask, withoutMask) * 100)
+
+		# display the label and bounding box rectangle on the output
+		# frame2
+		cv2.putText(frame2, label, (startX, startY - 10),
+								cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
+		cv2.rectangle(frame2, (startX, startY), (endX, endY), color, 2)
+
 	# show the output frame
-	cv2.imshow("Frame", frame)
+	cv2.imshow("MobileNetV2", frame)
+	cv2.imshow("InceptionV3", frame2)
 	key = cv2.waitKey(1) & 0xFF
 
 	# if the `q` key was pressed, break from the loop
