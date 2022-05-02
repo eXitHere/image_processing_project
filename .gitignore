@@ -15,6 +15,9 @@ ipython_config.py
 
 env
 
+model_InceptionV3
+model_MobileNetV2
+
 # Remove previous ipynb_checkpoints
 #   git rm -r .ipynb_checkpoints/
 
